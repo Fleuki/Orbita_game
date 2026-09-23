@@ -1,29 +1,31 @@
 import { Application, Container, Graphics, Ticker } from 'pixi.js';
 
 // Все настраиваемые числа игры. Углы — в градусах, скорости — в единицах/сек, время — в секундах.
+// Размеры и скорости в px заданы для S = 1 (меньшая сторона экрана 600 px)
+// и умножаются на S = min(innerWidth, innerHeight) / 600.
 const CONFIG = {
   scene: {
-    width: 800,
-    height: 600,
     background: 0x0a0a12,
+    baseSize: 600, // меньшая сторона экрана, при которой S = 1
   },
   core: {
-    radius: 30,
+    radius: 42,
     color: 0x00e5ff,
   },
   shield: {
-    radius: 90,
-    thickness: 10,
+    radius: 150,
+    thickness: 18,
     arcLength: 70, // градусы
     speed: 180, // градусы/сек
     color: 0xff2d95,
   },
   projectile: {
-    radius: 8,
+    radius: 14,
     color: 0xffffff,
     speed: 200, // px/сек
-    spawnInterval: 1.2, // сек
-    spawnMargin: 20, // px за пределами экрана
+    spawnInterval: 0.75, // сек
+    maxActive: 4, // максимум снарядов в воздухе одновременно
+    spawnMargin: 50, // px экрана за половиной диагонали
   },
   // Визуальный и тактильный фидбек. На механику не влияет.
   JUICE: {
@@ -78,10 +80,6 @@ const CONFIG = {
 };
 
 const DEG = Math.PI / 180;
-const CX = CONFIG.scene.width / 2;
-const CY = CONFIG.scene.height / 2;
-// Радиус окружности, гарантированно лежащей за краями экрана.
-const SPAWN_DISTANCE = Math.hypot(CX, CY) + CONFIG.projectile.radius + CONFIG.projectile.spawnMargin;
 
 interface TrailPoint {
   x: number;
@@ -132,18 +130,25 @@ function vibrate(pattern: number | number[]): void {
 async function main(): Promise<void> {
   const J = CONFIG.JUICE;
   const app = new Application();
+  // resolution = devicePixelRatio: буфер canvas = innerWidth * dpr, отрисовка масштабируется на dpr.
+  // Размер canvas на странице задаёт CSS (100vw x 100vh).
   await app.init({
-    width: CONFIG.scene.width,
-    height: CONFIG.scene.height,
+    width: window.innerWidth,
+    height: window.innerHeight,
+    resolution: window.devicePixelRatio || 1,
     background: CONFIG.scene.background,
     antialias: true,
   });
   document.body.appendChild(app.canvas);
 
-  // Всё игровое поле — с началом координат в центре экрана. Тряска сдвигает этот контейнер.
+  // Всё игровое поле — с началом координат в центре экрана, в единицах CONFIG (S = 1).
+  // Масштаб контейнера = S, поэтому все размеры и скорости из CONFIG умножаются на S.
+  // Тряска сдвигает этот контейнер.
   const world = new Container();
-  world.position.set(CX, CY);
   app.stage.addChild(world);
+  let centerX = 0;
+  let centerY = 0;
+  let spawnDistance = 0; // в единицах CONFIG
 
   const core = new Graphics().circle(0, 0, CONFIG.core.radius).fill(CONFIG.core.color);
   world.addChild(core);
@@ -178,11 +183,26 @@ async function main(): Promise<void> {
   world.addChild(projectileLayer, effectsLayer);
 
   // Вспышка всего экрана — вне world, чтобы тряска её не сдвигала.
-  const screenFlash = new Graphics()
-    .rect(0, 0, CONFIG.scene.width, CONFIG.scene.height)
-    .fill(0xffffff);
+  const screenFlash = new Graphics();
   screenFlash.alpha = 0;
   app.stage.addChild(screenFlash);
+
+  function layout(): void {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    app.renderer.resize(w, h, window.devicePixelRatio || 1);
+    const S = Math.min(w, h) / CONFIG.scene.baseSize;
+    centerX = w / 2;
+    centerY = h / 2;
+    world.scale.set(S);
+    world.position.set(centerX, centerY);
+    // Окружность спавна в px экрана переводим в единицы CONFIG.
+    spawnDistance = (Math.hypot(w, h) / 2 + CONFIG.projectile.spawnMargin) / S;
+    screenFlash.clear().rect(0, 0, w, h).fill(0xffffff);
+  }
+  layout();
+  window.addEventListener('resize', layout);
+  window.addEventListener('orientationchange', layout);
 
   // --- Игровое состояние ---
   let projectiles: Projectile[] = [];
@@ -227,8 +247,8 @@ async function main(): Promise<void> {
 
   function spawnProjectile(): void {
     const angle = Math.random() * Math.PI * 2;
-    const x = Math.cos(angle) * SPAWN_DISTANCE;
-    const y = Math.sin(angle) * SPAWN_DISTANCE;
+    const x = Math.cos(angle) * spawnDistance;
+    const y = Math.sin(angle) * spawnDistance;
     const trail = new Graphics();
     const gfx = new Graphics()
       .circle(0, 0, CONFIG.projectile.radius)
@@ -381,6 +401,11 @@ async function main(): Promise<void> {
 
     spawnTimer += dt;
     while (spawnTimer >= CONFIG.projectile.spawnInterval) {
+      if (projectiles.length >= CONFIG.projectile.maxActive) {
+        // Лимит достигнут — следующий снаряд появится, как только освободится место.
+        spawnTimer = CONFIG.projectile.spawnInterval;
+        break;
+      }
       spawnTimer -= CONFIG.projectile.spawnInterval;
       spawnProjectile();
     }
@@ -471,7 +496,7 @@ async function main(): Promise<void> {
     // Тряска экрана с затуханием.
     shakeTimer = Math.max(0, shakeTimer - dt);
     const amp = shakeTimer > 0 ? shakeAmplitude * (shakeTimer / shakeDuration) : 0;
-    world.position.set(CX + rand(-amp, amp), CY + rand(-amp, amp));
+    world.position.set(centerX + rand(-amp, amp), centerY + rand(-amp, amp));
 
     // Вспышка экрана.
     screenFlashTimer = Math.max(0, screenFlashTimer - dt);
