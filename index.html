@@ -1,6 +1,23 @@
 <!doctype html>
 <html lang="ru">
   <head>
+    <script>
+    window.addEventListener('error', function(e) {
+      var d = document.createElement('div');
+      d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+        'background:#a00;color:#fff;font:12px monospace;padding:8px;' +
+        'white-space:pre-wrap;word-break:break-all';
+      d.textContent = 'ERROR: ' + e.message + '\n' + (e.filename||'') + ':' + (e.lineno||'');
+      document.body.appendChild(d);
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+      var d = document.createElement('div');
+      d.style.cssText = 'position:fixed;top:40px;left:0;right:0;z-index:99999;' +
+        'background:#a00;color:#fff;font:12px monospace;padding:8px;white-space:pre-wrap';
+      d.textContent = 'PROMISE ERROR: ' + e.reason;
+      document.body.appendChild(d);
+    });
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Orbita</title>
