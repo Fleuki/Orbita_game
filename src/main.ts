@@ -1,4 +1,4 @@
-import { Application, Container, Graphics, Ticker } from 'pixi.js';
+import { Application, Container, Graphics, Text, Ticker } from 'pixi.js';
 
 // Все настраиваемые числа игры. Углы — в градусах, скорости — в единицах/сек, время — в секундах.
 // Размеры и скорости в px заданы для S = 1 (меньшая сторона экрана 600 px)
@@ -26,6 +26,42 @@ const CONFIG = {
     spawnInterval: 0.75, // сек
     maxActive: 4, // максимум снарядов в воздухе одновременно
     spawnMargin: 50, // px экрана за половиной диагонали
+  },
+  score: {
+    comboStep: 5, // каждые N отбитых подряд множитель растёт на 1
+    maxMultiplier: 5,
+    storageKey: 'orbita_best',
+  },
+  // Интерфейс: размеры в px при S = 1, время в секундах.
+  UI: {
+    fontFamily: 'Arial, Helvetica, sans-serif',
+    scoreFontSize: 42,
+    scoreColor: 0xffffff,
+    scoreTop: 36, // отступ счёта от верха экрана
+    scoreGlowBlur: 12,
+    scoreGlowAlpha: 0.6,
+    multiplierFontSize: 24,
+    multiplierColor: 0xff2d95,
+    multiplierGap: 4, // между счётом и множителем
+    multiplierPopScale: 1.4,
+    multiplierPopDuration: 0.2,
+    gameOver: {
+      delay: 0.5, // от взрыва ядра до появления экрана
+      inputLock: 0.4, // сколько тапы игнорируются после появления
+      fadeIn: 0.15,
+      dimAlpha: 0.7,
+      scoreFontSize: 96,
+      bestFontSize: 24,
+      bestColor: 0xaaaaaa,
+      newRecordColor: 0xffd400,
+      newRecordPulseScale: 0.12, // ±12% размера
+      newRecordPulsePeriod: 0.8,
+      hintFontSize: 20,
+      hintColor: 0xffffff,
+      hintAlpha: 0.7,
+      bestGap: 8, // между счётом и рекордом
+      hintGap: 48, // между рекордом и подписью
+    },
   },
   // Визуальный и тактильный фидбек. На механику не влияет.
   JUICE: {
@@ -127,6 +163,28 @@ function vibrate(pattern: number | number[]): void {
   if (typeof navigator.vibrate === 'function') navigator.vibrate(pattern);
 }
 
+function loadBest(): number {
+  try {
+    return Number(localStorage.getItem(CONFIG.score.storageKey)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveBest(value: number): void {
+  try {
+    localStorage.setItem(CONFIG.score.storageKey, String(value));
+  } catch {
+    // localStorage недоступен (приватный режим) — рекорд живёт до перезагрузки.
+  }
+}
+
+function makeText(fill: number): Text {
+  const t = new Text({ text: '', style: { fontFamily: CONFIG.UI.fontFamily, fontWeight: 'bold', fill } });
+  t.anchor.set(0.5);
+  return t;
+}
+
 async function main(): Promise<void> {
   const J = CONFIG.JUICE;
   const app = new Application();
@@ -183,9 +241,59 @@ async function main(): Promise<void> {
   world.addChild(projectileLayer, effectsLayer);
 
   // Вспышка всего экрана — вне world, чтобы тряска её не сдвигала.
+  const UI = CONFIG.UI;
+  const GO = UI.gameOver;
+
+  // HUD: счёт и множитель — вне world, тряска их не двигает.
+  const hud = new Container();
+  const scoreText = makeText(UI.scoreColor);
+  const multiplierText = makeText(UI.multiplierColor);
+  multiplierText.visible = false;
+  hud.addChild(scoreText, multiplierText);
+  app.stage.addChild(hud);
+
+  // Экран проигрыша.
+  const overlay = new Container();
+  overlay.visible = false;
+  const overlayDim = new Graphics();
+  const finalScoreText = makeText(UI.scoreColor);
+  const bestText = makeText(GO.bestColor);
+  const hintText = makeText(GO.hintColor);
+  hintText.text = 'Нажмите, чтобы играть снова';
+  hintText.alpha = GO.hintAlpha;
+  overlay.addChild(overlayDim, finalScoreText, bestText, hintText);
+  app.stage.addChild(overlay);
+
   const screenFlash = new Graphics();
   screenFlash.alpha = 0;
   app.stage.addChild(screenFlash);
+
+  function layoutUI(w: number, h: number, S: number): void {
+    scoreText.style.fontSize = UI.scoreFontSize * S;
+    scoreText.style.dropShadow = {
+      color: UI.scoreColor, alpha: UI.scoreGlowAlpha, blur: UI.scoreGlowBlur * S, distance: 0, angle: 0,
+    };
+    // Запас вокруг текста, чтобы свечение не обрезалось прямоугольником.
+    scoreText.style.padding = UI.scoreGlowBlur * S * 2;
+    scoreText.position.set(w / 2, (UI.scoreTop + UI.scoreFontSize / 2) * S);
+    multiplierText.style.fontSize = UI.multiplierFontSize * S;
+    multiplierText.position.set(
+      w / 2,
+      (UI.scoreTop + UI.scoreFontSize + UI.multiplierGap + UI.multiplierFontSize / 2) * S,
+    );
+
+    overlayDim.clear().rect(0, 0, w, h).fill({ color: 0x000000, alpha: GO.dimAlpha });
+    finalScoreText.style.fontSize = GO.scoreFontSize * S;
+    bestText.style.fontSize = GO.bestFontSize * S;
+    hintText.style.fontSize = GO.hintFontSize * S;
+    const blockH = GO.scoreFontSize + GO.bestGap + GO.bestFontSize + GO.hintGap + GO.hintFontSize;
+    let y = h / 2 - (blockH / 2) * S;
+    finalScoreText.position.set(w / 2, y + (GO.scoreFontSize / 2) * S);
+    y += (GO.scoreFontSize + GO.bestGap) * S;
+    bestText.position.set(w / 2, y + (GO.bestFontSize / 2) * S);
+    y += (GO.bestFontSize + GO.hintGap) * S;
+    hintText.position.set(w / 2, y + (GO.hintFontSize / 2) * S);
+  }
 
   function layout(): void {
     const w = window.innerWidth;
@@ -199,6 +307,7 @@ async function main(): Promise<void> {
     // Окружность спавна в px экрана переводим в единицы CONFIG.
     spawnDistance = (Math.hypot(w, h) / 2 + CONFIG.projectile.spawnMargin) / S;
     screenFlash.clear().rect(0, 0, w, h).fill(0xffffff);
+    layoutUI(w, h, S);
   }
   layout();
   window.addEventListener('resize', layout);
@@ -224,8 +333,25 @@ async function main(): Promise<void> {
   let shakeDuration = 0;
   let shakeAmplitude = 0;
   let hitStopTimer = 0;
-  let pendingReset = false;
   let screenFlashTimer = 0;
+
+  // --- Очки и экран проигрыша ---
+  let state: 'playing' | 'dying' | 'over' = 'playing';
+  let score = 0;
+  let streak = 0; // отбито подряд
+  let multiplier = 1;
+  let best = loadBest();
+  let newRecord = false;
+  let multiplierPopTimer = 0;
+  let deathTimer = 0; // с момента взрыва ядра
+  let overTimer = 0; // с момента появления экрана проигрыша
+
+  function updateScoreText(): void {
+    scoreText.text = String(score);
+    multiplierText.text = `x${multiplier}`;
+    multiplierText.visible = multiplier >= 2;
+  }
+  updateScoreText();
   const particles: Particle[] = [];
   const flashes: Flash[] = [];
 
@@ -335,6 +461,13 @@ async function main(): Promise<void> {
     shake(D.shakeAmplitude, D.shakeDuration);
     shieldGlowTimer = D.shieldGlowDuration;
     vibrate(J.haptics.deflect);
+
+    score += multiplier;
+    streak++;
+    const next = Math.min(CONFIG.score.maxMultiplier, 1 + Math.floor(streak / CONFIG.score.comboStep));
+    if (next > multiplier) multiplierPopTimer = UI.multiplierPopDuration;
+    multiplier = next;
+    updateScoreText();
   }
 
   function onGameOver(): void {
@@ -349,14 +482,48 @@ async function main(): Promise<void> {
     }
     core.visible = false;
     hitStopTimer = G.hitStop;
-    pendingReset = true;
+    state = 'dying';
+    deathTimer = 0;
     shake(G.shakeAmplitude, G.shakeDuration);
     screenFlashTimer = G.screenFlashDuration;
     vibrate(J.haptics.gameOver);
   }
 
+  function showGameOver(): void {
+    state = 'over';
+    overTimer = 0;
+    newRecord = score > best;
+    if (newRecord) {
+      best = score;
+      saveBest(best);
+    }
+    finalScoreText.text = String(score);
+    bestText.text = newRecord ? 'НОВЫЙ РЕКОРД!' : `РЕКОРД: ${best}`;
+    bestText.style.fill = newRecord ? GO.newRecordColor : GO.bestColor;
+    bestText.scale.set(1);
+    overlay.alpha = 0;
+    overlay.visible = true;
+    hud.visible = false;
+  }
+
+  function restart(): void {
+    reset();
+    score = 0;
+    streak = 0;
+    multiplier = 1;
+    multiplierPopTimer = 0;
+    updateScoreText();
+    overlay.visible = false;
+    hud.visible = true;
+    state = 'playing';
+  }
+
+  function onInput(): void {
+    if (state === 'playing') toggleDirection();
+    else if (state === 'over' && overTimer >= GO.inputLock) restart();
+  }
+
   function toggleDirection(): void {
-    if (pendingReset) return;
     direction = -direction;
     easeFrom = angularVel;
     easeTime = 0;
@@ -372,11 +539,11 @@ async function main(): Promise<void> {
     return angleHistory.length ? angleHistory[0].angle : shieldAngle;
   }
 
-  app.canvas.addEventListener('pointerdown', toggleDirection);
+  app.canvas.addEventListener('pointerdown', onInput);
   window.addEventListener('keydown', (e) => {
     if (e.code !== 'Space') return;
     e.preventDefault();
-    if (!e.repeat) toggleDirection();
+    if (!e.repeat) onInput();
   });
 
   // --- Обновление ---
@@ -510,14 +677,28 @@ async function main(): Promise<void> {
     if (hitStopTimer > 0) {
       // Hit-stop: игра и частицы заморожены, тряска и вспышка идут.
       hitStopTimer -= dt;
-      if (hitStopTimer <= 0 && pendingReset) {
-        pendingReset = false;
-        reset();
-      }
     } else {
-      updateGame(dt);
+      // После проигрыша игра стоит, доигрывают только частицы.
+      if (state === 'playing') updateGame(dt);
       updateParticles(dt);
     }
+
+    if (state === 'dying') {
+      deathTimer += dt;
+      if (deathTimer >= GO.delay) showGameOver();
+    } else if (state === 'over') {
+      overTimer += dt;
+      overlay.alpha = Math.min(1, overTimer / GO.fadeIn);
+      if (newRecord) {
+        const k = Math.sin((overTimer / GO.newRecordPulsePeriod) * Math.PI * 2);
+        bestText.scale.set(1 + GO.newRecordPulseScale * k);
+      }
+    }
+
+    // Всплеск множителя: 1 → popScale → 1.
+    multiplierPopTimer = Math.max(0, multiplierPopTimer - dt);
+    const pop = Math.sin((1 - multiplierPopTimer / UI.multiplierPopDuration) * Math.PI);
+    multiplierText.scale.set(multiplierPopTimer > 0 ? 1 + (UI.multiplierPopScale - 1) * pop : 1);
 
     renderVisuals(dt);
   });
